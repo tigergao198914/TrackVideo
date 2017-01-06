@@ -1,0 +1,1 @@
+mcc -W cpplib:libTrack -T link:lib markObject.p endMarkObject.p feedFrame.p FH_show2.m ccc.m tracker/fhog.m tracker/gaussian_correlation.m tracker/gaussian_shaped_labels.m tracker/get_features.m tracker/get_subwindow.m tracker/show_video.m tracker/videofig.m /usr/local/MATLAB/R2015b/toolbox/signal/signal/hann.m -C
