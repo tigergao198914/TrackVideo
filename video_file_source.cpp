@@ -3,6 +3,7 @@
 #include <thread>
 #include <string>
 #include <iostream>
+#include <QPainter>
 
 VideoFileReader::VideoFileReader()
   :_pFormatCtx(NULL)
@@ -12,12 +13,36 @@ VideoFileReader::VideoFileReader()
    ,_pFrame(NULL)
    ,_pFrameRGB(NULL)
    ,_buffer(0)
+   ,_bPause(false)
+  ,_bSetStop(false)
+   ,_videoStream(-1)
+  ,_bStart(false)
+  ,_bSeek(false)
+  ,_seekPosition(0)
+  ,_lastFrameNum(0)
 {
 }
 
 VideoFileReader::~VideoFileReader()
 {
   release();
+}
+
+bool VideoFileReader::isStart()
+{
+  return _bStart;
+}
+
+bool VideoFileReader::isPause()
+{
+  return _bPause;
+}
+
+long long VideoFileReader::getDuration()
+{
+  //std::cout<<_duration<<std::endl;
+  //std::cout<<av_q2d(_pFormatCtx->streams[_videoStream]->time_base)<<std::endl;
+  return _duration;
 }
 
 int VideoFileReader::config( std::string fileName )
@@ -35,6 +60,36 @@ int VideoFileReader::config( std::string fileName )
   }
 
   _fileName = fileName;
+
+  stop();
+  release();
+
+  if( avformat_open_input(&_pFormatCtx, _fileName.c_str(), NULL, NULL)!=0)
+  {
+      std::cout<< "avformat_open_input failed"<<std::endl;
+      return -1;
+  }
+
+  if( avformat_find_stream_info(_pFormatCtx, NULL)<0 )
+  {
+    std::cout<<"avformat_find_stream_info"<<std::endl;
+    return -1;
+  }
+
+  for(int i=0; i<_pFormatCtx->nb_streams; i++)
+  {
+    if(_pFormatCtx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO) 
+    {
+      _videoStream=i;
+      break;
+    }
+  }
+
+  if( _videoStream==-1 )
+    return -1;
+
+  _duration = _pFormatCtx->streams[_videoStream]->duration;
+  _pCodecCtxOrig = _pFormatCtx->streams[_videoStream]->codec;
   return 0;
 }
 
@@ -50,30 +105,7 @@ int VideoFileReader::start()
   int               frameFinished;
   int               numBytes;
 
-  release();
   struct SwsContext *sws_ctx = NULL;
-#if 1
-  if( avformat_open_input(&_pFormatCtx, _fileName.c_str(), NULL, NULL)!=0)
-    return -1;
-
-  if( avformat_find_stream_info(_pFormatCtx, NULL)<0 )
-    return -1;
-
-  int videoStream = -1;
-  int i;
-  for(i=0; i<_pFormatCtx->nb_streams; i++)
-  {
-    if(_pFormatCtx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO) 
-    {
-      videoStream=i;
-      break;
-    }
-  }
-
-  if( videoStream==-1 )
-    return -1;
-
-  _pCodecCtxOrig = _pFormatCtx->streams[videoStream]->codec;
 
   _pCodec=avcodec_find_decoder(_pCodecCtxOrig->codec_id);
   if(_pCodec==NULL) {
@@ -99,6 +131,23 @@ int VideoFileReader::start()
   if(_pFrameRGB==NULL)
     return -1;
 
+  double scale = 1;
+  int targetWidth, targetHeight;
+  if( (_pCodecCtx->width==1920 && _pCodecCtx->height == 1080) ||
+      (_pCodecCtx->height==1080 && _pCodecCtx->width == 1920) )
+  {
+      scale = 3;
+      targetWidth = _pCodecCtx->width/scale;
+      targetHeight = _pCodecCtx->height/scale;
+      std::cout<< targetWidth<<","<<targetHeight<<std::endl;
+  }
+  else
+  {
+     targetWidth = _pCodecCtx->width;
+     targetHeight = _pCodecCtx->height;
+  }
+
+  #if 0
   // Determine required buffer size and allocate buffer
   numBytes=avpicture_get_size(AV_PIX_FMT_RGB24, _pCodecCtx->width,
 			      _pCodecCtx->height);
@@ -122,13 +171,39 @@ int VideoFileReader::start()
 			   NULL,
 			   NULL
 			   );
-
+  #else
+   // Determine required buffer size and allocate buffer
+  numBytes=avpicture_get_size(AV_PIX_FMT_RGB24, targetWidth ,
+			      targetHeight);
+  _buffer=(uint8_t *)av_malloc(numBytes*sizeof(uint8_t));
+  
+  // Assign appropriate parts of buffer to image planes in pFrameRGB
+  // Note that pFrameRGB is an AVFrame, but AVFrame is a superset
+  // of AVPicture
+  avpicture_fill((AVPicture *)_pFrameRGB, _buffer, AV_PIX_FMT_RGB24,
+		 targetWidth, targetHeight );
+  
+  // initialize SWS context for software scaling
+  sws_ctx = sws_getContext(_pCodecCtx->width,
+			   _pCodecCtx->height,
+			   _pCodecCtx->pix_fmt,
+			   targetWidth,
+			   targetHeight,
+			   AV_PIX_FMT_RGB24,
+			   SWS_BILINEAR,
+			   NULL,
+			   NULL,
+			   NULL
+			   );
+#endif
   // Read frames and save first five frames to disk
-  i=0;
-  while(av_read_frame(_pFormatCtx, &packet)>=0)
+  _startMtx.lock();
+  _bStart = true;
+  _startMtx.unlock();
+  while(av_read_frame(_pFormatCtx, &packet)>=0&&!_bSetStop)
   {
     // Is this a packet from the video stream?
-    if(packet.stream_index==videoStream)
+    if(packet.stream_index==_videoStream)
     {
         // Decode video frame
         avcodec_decode_video2(_pCodecCtx, _pFrame, &frameFinished, &packet);
@@ -143,34 +218,70 @@ int VideoFileReader::start()
             _pFrameRGB->data, _pFrameRGB->linesize);
 
 	  VideoFrame vf;
-	  vf.setParams(VideoFormat_RGB, _pFrame->width,
-		       _pFrame->height,_pFrameRGB->linesize[0],
-		       _pFrameRGB->data[0]);
+	  long long timestamp =  _pFrame->pts;
+
+	  if( _lastTs < timestamp )
+          {
+            _lastFrameNum += 1;
+            ts2frameNum[ timestamp ] = _lastFrameNum;
+          }
+          else
+          {
+            _lastFrameNum = ts2frameNum[ timestamp ];
+          }
+
+	  if( _lastFrameNum <= 0)
+	    {
+	      _lastFrameNum = 1;
+	    }
+	 
+          _lastTs = timestamp;
 	  
+	  QImage tmpImage =  QImage( (uchar*)_pFrameRGB->data[0], targetWidth,
+		       targetHeight, _pFrameRGB->linesize[0],
+		       QImage::Format_RGB888);
+	  vf.setParams( &tmpImage, _pFrameRGB->data[0], timestamp, _lastFrameNum, scale );
+
+ 
+        
           //diliver frame to receivers 
-          pubFrame( vf  ); 
+           pubFrame( vf );
+
+
+	  if( _bPause )
+	  {
+	    std::unique_lock<std::mutex> l(_fileReaderMtx);
+	    if( _bPause )
+	    {
+	       _fileReaderCv.wait(l);
+	    }
+          }
+	  
+	  if( _bSeek )
+	  {
+	    std::unique_lock<std::mutex>(_seekMtx);
+	    if( _bSeek )
+	    {
+              av_seek_frame( _pFormatCtx, _videoStream,
+		   _seekPosition*_duration, AVSEEK_FLAG_FRAME );
+	      _bSeek = false;
+	      _seekPosition = 0;
+	    }
+	  }
+	  
         }
     }
     
     // Free the packet that was allocated by av_read_frame
     av_free_packet(&packet);
   }
-  #if 0
-  // Free the RGB image
-  av_free(_buffer);
-  av_frame_free(&_pFrameRGB);
-  
-  // Free the YUV frame
-  av_frame_free(&_pFrame);
-  
-  // Close the codecs
-  avcodec_close(_pCodecCtx);
-  avcodec_close(_pCodecCtxOrig);
 
-  // Close the video file
-  avformat_close_input(&_pFormatCtx);
-  #endif
-#endif
+  {
+    std::unique_lock<std::mutex> l(_startMtx);
+    _bStart = false;
+  }
+  _startCv.notify_one();
+  return 0;
 }
 
 void VideoFileReader::release()
@@ -214,15 +325,49 @@ void VideoFileReader::release()
 
 int VideoFileReader::stop()
 {
+   {
+      std::unique_lock<std::mutex> l(_startMtx);
+      if( !_bStart )
+        return 0;
+      
+      _bSetStop = true;
+     if( _bPause )
+       pause();
+     _startCv.wait(l);
+     _bSetStop = false;
+  }
+  return 0;
 }
 
 int VideoFileReader::pause()
 {
+  std::cout << "pause"<<std::endl;
+  if( !_bStart )
+    return 0;
+  std::unique_lock<std::mutex> l(_fileReaderMtx);
+  _bPause = !_bPause;
+  if( !_bPause )
+    {
+      _fileReaderCv.notify_one();
+    }
+  return _bPause;
 }
 
-int VideoFileReader::seekbyFrameNumber( int frameNum )
+int VideoFileReader::seek(double position)
 {
+  if( !_bStart )
+    return 0;
+  {
+    std::unique_lock<std::mutex>(_seekMtx);
+    _bSeek = true;
+    _seekPosition = position;
 
+    if( _bPause )
+    {
+      _fileReaderCv.notify_one();
+    }
+  }
+  return 0;
 }
 
 bool VideoFileReader::fileExist(std::string fileName)

@@ -8,7 +8,7 @@ VideoSender::VideoSender()
 {
 }
 
-void VideoSender::addReceiver(std::shared_ptr<VideoReceiver> receiver)
+void VideoSender::addReceiver( VideoReceiver* receiver)
 {
   for( auto iter=_receiverList.begin(); iter!=_receiverList.end(); iter++ )
   {
@@ -18,7 +18,7 @@ void VideoSender::addReceiver(std::shared_ptr<VideoReceiver> receiver)
   _receiverList.push_back(receiver);
 }
 
-void VideoSender::removeReceiver(std::shared_ptr<VideoReceiver> receiver)
+void VideoSender::removeReceiver(VideoReceiver* receiver)
 {
   
   

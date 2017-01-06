@@ -21,9 +21,11 @@ void GLWidget::receive(QImage *image)
        std::unique_lock<std::mutex> lock(_imageMutex);
        if( !_bEmpty )
        {
-         _emptyCon.wait(lock);
+         //_emptyCon.wait(lock);
+	 //_emptyCon.wait_for(lock, );
        }
-       _image = image;
+       _image =  new QImage( *image) ;
+
        _bEmpty = false;
     }
     update();
@@ -34,44 +36,42 @@ void GLWidget::paintEvent(QPaintEvent *event)
     if( _image )
     {
       QPainter painter;
-      QImage tmpImage;
       painter.begin(this);
       painter.setRenderHint(QPainter::Antialiasing);
-
       {
 	 std::unique_lock<std::mutex>  lock(_imageMutex);
-         tmpImage = _image->scaled(event->rect().width(),
-				      event->rect().height(),
-				       Qt::KeepAspectRatio);
+         _tmpImage = _image->scaled(event->rect().width(),
+				   event->rect().height(),
+				   Qt::KeepAspectRatio,
+				   Qt::SmoothTransformation);
+	 delete _image;
+	 _image = 0;
 	 _bEmpty = true;
 	 _emptyCon.notify_one();
       }
-      
-      int leftX = (event->rect().width()-tmpImage.width()) /2;
-      int leftY = (event->rect().height()-tmpImage.height())/2;
-      int rightX = leftX + tmpImage.width();
-      int rightY = leftY + tmpImage.height();
-      QRect rect = QRect( QPoint(leftX, leftY),
-		          QPoint(rightX, rightY)  );
-      painter.drawImage(rect, tmpImage );
-      drawTextAndEllipse( &painter, "死劲戳我有惊喜哟!", leftX, leftY, 100, 100 );
+
+      _width = event->rect().size().width();
+      _height = event->rect().size().height();
+      _leftX = (event->rect().width()-_tmpImage.width()) /2;
+      _leftY = (event->rect().height()-_tmpImage.height())/2;
+      _rightX = _leftX + _tmpImage.width();
+      _rightY = _leftY + _tmpImage.height();
+      QRect rect = QRect( QPoint(_leftX, _leftY),
+		          QPoint(_rightX, _rightY)  );
+
+      painter.drawImage(rect, _tmpImage );
       painter.end();
     }
  }
 
-void GLWidget::drawTextAndEllipse(QPainter *painter, std::string text, int leftX, int leftY,
-				  int width, int height)
+QImage GLWidget::getImage()
 {
-   QFont textFont("times", 20, QFont::Bold );
-   QPen textPen;
-   //circlePen = QPen(Qt::black);
-   painter->drawEllipse(QRectF(leftX, leftY, width, height));
-   textPen = QPen(Qt::white);
-   painter->setPen(textPen);
-   painter->setFont(textFont);
-   painter->drawText( QRect(leftX, leftY+height/2+50, 500, 100),
-		      Qt::AlignCenter,
-		      text.c_str() );
+  _fullImage = new QImage(_width, _height, QImage::Format_RGB888);
+  _fullImage->fill( QColor(0,0,0) );
+  for( int x=_leftX; x<_rightX; x++ )
+    for( int y=_leftY; y<_rightY; y++ )
+      _fullImage->setPixelColor(x, y, _tmpImage.pixelColor(x-_leftX, y-_leftY));
+  return *_fullImage;
 }
 
 VideoRenderWindow::VideoRenderWindow()
@@ -80,13 +80,15 @@ VideoRenderWindow::VideoRenderWindow()
     QVBoxLayout *layout = new QVBoxLayout;
     setLayout(layout);
     layout->addWidget(_openGL);
-
-    //QTimer *timer = new QTimer(this);
-    //connect(timer, &QTimer::timeout, openGL, &GLWidget::animate);
-    //timer->start(20);
+    layout->setMargin(0);
 }
 
 void VideoRenderWindow::receive( QImage *image )
 {
     _openGL->receive(image);
+}
+
+QImage VideoRenderWindow::getImage( )
+{
+  return _openGL->getImage();
 }

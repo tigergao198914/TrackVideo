@@ -47,7 +47,7 @@ class VideoFileRecorder : public VideoReceiver
    int _frameCount;
    double _videoTime;
    void closeCodec();
-   void setupCodec();
+   int setupCodec();
    bool _bSetup;
 };
 

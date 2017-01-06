@@ -10,12 +10,12 @@ class VideoSender
   public:
     VideoSender();
     ~VideoSender();
-    void addReceiver(std::shared_ptr<VideoReceiver> receiver);
-    void removeReceiver(std::shared_ptr<VideoReceiver> receiver);
+    void addReceiver( VideoReceiver* receiver);
+    void removeReceiver( VideoReceiver* receiver);
   protected:
     void pubFrame(VideoFrame &frame);
   private:
-    std::vector<std::shared_ptr<VideoReceiver>> _receiverList;
+    std::vector<VideoReceiver*> _receiverList;
 };
 
 #endif

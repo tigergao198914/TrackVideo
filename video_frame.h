@@ -1,5 +1,6 @@
 #ifndef _VIDEO_FRAME_H_
 #define _VIDEO_FRAME_H_
+#include <QImage>
 
 enum VideoFormat
 {
@@ -10,26 +11,23 @@ enum VideoFormat
 class VideoFrame
 {
   public:
-  VideoFrame(){};
-    void setParams(VideoFormat format,
-		   int width, int height,
-		   int lineSize, void *data)
+    VideoFrame(){};
+    void setParams(QImage *image, unsigned char *data,
+		   long long timestamp,int frameNum, double scale)
     {
-      _format = format;
-      _width = width;
-      _height = height;
-      _lineSize = lineSize;
       _data = data;
+      _timestamp = timestamp;
+      _frameNum = frameNum;
+      _scale = scale;
+      img = image;
     }
     ~VideoFrame(){};
   
-   VideoFormat _format;
-   int _width;
-   int _height;
-   void *_data;
-   int _timestamp;
-   int _lineSize;
-
+    QImage *img;
+    long long  _timestamp;
+    int _frameNum;
+    unsigned char *_data;
+    double _scale;
 };
 
 #endif
